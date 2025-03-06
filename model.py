@@ -5,7 +5,6 @@ import torch.nn.functional as F
 class spatialProcess(nn.Module):
     def __init__(self, channels):
         super(spatialProcess, self).__init__()
-        # the dim of images will be quartered in order to get the original dim back
 
         self.branch1 = nn.Conv2d(channels, kernel_size=1)
         self.branch3 = nn.Sequential(
@@ -21,7 +20,6 @@ class spatialProcess(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
             nn.Conv2d(channels//4, kernel_size=1)
         )
- 
 
     def forward(self, x):
         branch1 = self.branch1(x)
@@ -32,6 +30,74 @@ class spatialProcess(nn.Module):
         out = torch.cat([branch1, branch3, branch5, pool], dim=1)
 
         return out
+
+class MultiHeadFrequencyAttentionWithChroma(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super(MultiHeadFrequencyAttentionWithChroma, self).__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+
+        # Multi-head attention
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads)
+        self.linear = nn.Linear(embed_dim, embed_dim)
+        self.norm = nn.LayerNorm(embed_dim)
+
+        # Convolutional layer for chroma enhancement
+        self.conv = nn.Conv2d(3, 3, kernel_size=3, padding=1)  # RGB channels
+
+    def rgb_to_ycbcr(self, rgb):
+
+        matrix = torch.tensor(
+            [[0.299, 0.587, 0.114],
+             [-0.1687, -0.3313, 0.5],
+             [0.5, -0.4187, -0.0813]],
+            device=rgb.device
+        ).T
+        ycbcr = torch.matmul(rgb, matrix) + torch.tensor([0, 128, 128], device=rgb.device)
+        return ycbcr
+
+    def ycbcr_to_rgb(self, ycbcr):
+
+        matrix = torch.tensor(
+            [[1.0, 0.0, 1.402],
+             [1.0, -0.344136, -0.714136],
+             [1.0, 1.772, 0.0]],
+            device=ycbcr.device
+        )
+        rgb = torch.matmul(ycbcr - torch.tensor([0, 128, 128], device=ycbcr.device), matrix.T)
+        return rgb
+
+    def forward(self, x):
+        # x: (batch_size, seq_length, embed_dim)
+
+        # Step 1: FFT to frequency domain
+        x_freq = fft.rfft(x, dim=-1)
+        x_freq = torch.view_as_real(x_freq)
+
+        # Step 2: Multi-Head Frequency Attention
+        batch_size, seq_length, freq_dim, _ = x_freq.size()
+        x_freq = x_freq.view(batch_size, seq_length, -1)
+        attn_output, _ = self.attention(x_freq, x_freq, x_freq)
+        output = self.linear(attn_output)
+        output = self.norm(output + x_freq)
+
+        # Step 3: Reshape and IFFT back to spatial domain
+        output = output.view(batch_size, seq_length, freq_dim, 2)
+        output = torch.view_as_complex(output)
+        output = fft.irfft(output, dim=-1)
+
+        # Step 4: Convert RGB to YCbCr
+        ycbcr = self.rgb_to_ycbcr(output)
+
+        # Step 5: Apply chroma enhancement using convolution
+        ycbcr = ycbcr.permute(0, 2, 1).unsqueeze(1)  # Reshape for convolution
+        enhanced_ycbcr = self.conv(ycbcr)
+        enhanced_ycbcr = enhanced_ycbcr.squeeze(1).permute(0, 2, 1)
+
+        # Step 6: Convert YCbCr back to RGB
+        enhanced_output = self.ycbcr_to_rgb(enhanced_ycbcr)
+
+        return enhanced_output
 
 class MDTA(nn.Module):
     def __init__(self, channels, num_heads):
