@@ -3,6 +3,9 @@ import os
 import pandas as pd
 import torch
 import torch.nn.functional as F
+
+import hybridLoss
+
 from PIL import Image
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -13,7 +16,7 @@ from model import Restormer
 from utils import parse_args, RainDataset, rgb_to_y, psnr, ssim, VGGPerceptualLoss
 
 
-perceptual_loss = VGGPerceptualLoss().cuda()
+
 
 def test_loop(net, data_loader, num_iter):
     net.eval()
@@ -42,6 +45,7 @@ def test_loop(net, data_loader, num_iter):
 
 def save_loop(net, data_loader, num_iter):
     global best_psnr, best_ssim
+    hybridloss = hybridLoss.HybridLoss()
     val_psnr, val_ssim = test_loop(net, data_loader, num_iter)
     results['PSNR'].append('{:.2f}'.format(val_psnr))
     results['SSIM'].append('{:.3f}'.format(val_ssim))
@@ -84,7 +88,7 @@ if __name__ == '__main__':
             rain, norain, name, h, w = next(train_loader)
             rain, norain = rain.cuda(), norain.cuda()
             out = model(rain)
-            loss = F.l1_loss(out, norain)+ perceptual_loss(out, norain) * 0.2
+            loss = hybridLoss.HybridLoss(out, norain, rain)
 
 
             optimizer.zero_grad()
